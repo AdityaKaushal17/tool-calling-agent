@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Provision Postgres roles and test database
+        env:
+          PGPASSWORD: postgres
+        run: |
+          python - <<'PY'
+          import psycopg
+          from psycopg import sql
+
+          admin_conn = psycopg.connect("postgresql://postgres:postgres@localhost:5432/postgres", autocommit=True)
+          with admin_conn.cursor() as cur:
+              for statement in [
+                  "CREATE ROLE tool_agent LOGIN PASSWORD 'tool_agent'",
+                  "CREATE ROLE tool_agent_readonly LOGIN PASSWORD 'tool_agent_readonly'",
+                  "CREATE DATABASE tool_agent_test OWNER tool_agent",
+              ]:
+                  try:
+                      cur.execute(statement)
+                  except Exception:
+                      pass
+
+          test_conn = psycopg.connect("postgresql://postgres:postgres@localhost:5432/tool_agent_test", autocommit=True)
+          with test_conn.cursor() as cur:
+              cur.execute("GRANT USAGE ON SCHEMA public TO tool_agent_readonly")
+              cur.execute("ALTER DEFAULT PRIVILEGES FOR ROLE tool_agent IN SCHEMA public GRANT SELECT ON TABLES TO tool_agent_readonly")
+          PY
+
+      - name: Lint
+        run: |
+          python -m ruff check .
+
+      - name: Test
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://tool_agent:tool_agent@localhost:5432/tool_agent_test
+          TEST_READONLY_DATABASE_URL: postgresql+psycopg://tool_agent_readonly:tool_agent_readonly@localhost:5432/tool_agent_test
+        run: |
+          python -m pytest -v
+
+      - name: Evaluate
+        run: |
+          python app/eval/run_eval.py | tee eval-output.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          eval_data = json.loads(Path("eval-output.json").read_text())
+          golden = json.loads(Path("app/eval/golden_set.json").read_text())
+          results = eval_data["results"]
+
+          grounded = [
+              result
+              for result, item in zip(results, golden)
+              if not item["expected"]["blocked"]
+          ]
+          adversarial = [
+              (item["prompt"], result)
+              for result, item in zip(results, golden)
+              if item["expected"]["blocked"] and not result["passed"]
+          ]
+          grounding_pass_rate = (sum(result["passed"] for result in grounded) / len(grounded)) if grounded else 1.0
+
+          if grounding_pass_rate < 0.95:
+              raise SystemExit(f"grounding_pass_rate too low: {grounding_pass_rate:.2%}")
+          if adversarial:
+              raise SystemExit(f"adversarial cases failed: {adversarial}")
+          PY
