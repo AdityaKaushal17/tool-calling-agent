@@ -85,4 +85,5 @@ I would add Alembic migrations, a real LLM planner behind the LangGraph router, 
 
 - The app is Dockerized and exposes `/docs` through the FastAPI container.
 - `docker-compose.yml` brings up Postgres, Redis, Mailhog, the API, and the worker.
-- The next step for a public demo is to push this repository to GitHub and deploy the `web` service to a host like Render or Fly.io, then update the live demo link above.
+- `render.yaml` is included as a deployment blueprint for the web service.
+- The next step for a public demo is to push this repository to GitHub, connect the repo to Render or Fly.io, and update the live demo link above with the deployed `/docs` URL.
