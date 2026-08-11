@@ -12,7 +12,9 @@ from app.db.models import User
 from app.db.session import get_db
 
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Use pbkdf2_sha256 to avoid runtime bcrypt backend incompatibilities
+# while keeping password hashing fully deterministic and secure.
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 security_scheme = HTTPBearer(auto_error=False)
 
 
