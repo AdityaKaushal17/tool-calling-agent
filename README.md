@@ -1,10 +1,77 @@
 # Tool-Calling Agent
 
-[![CI](https://github.com/<OWNER>/<REPO>/actions/workflows/ci.yml/badge.svg)](https://github.com/<OWNER>/<REPO>/actions/workflows/ci.yml)
+[![CI](https://github.com/AdityaKaushal17/tool-calling-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/AdityaKaushal17/tool-calling-agent/actions/workflows/ci.yml)
 
 Backend-first reference implementation for an agent that reads real Postgres data, drafts an email from that data, and refuses destructive actions by construction.
 
 Live demo: pending deployment. Once the repository is pushed to GitHub and deployed, replace this line with the live Swagger URL for `/docs`.
+
+## Demo
+
+Example request to `POST /agent/run`:
+
+```bash
+curl -X POST http://localhost:8000/agent/run \
+	-H "Authorization: Bearer <token>" \
+	-H "Content-Type: application/json" \
+	-d '{"message":"Email the sales team a summary of last week\'s signups."}'
+```
+
+Example status response from `GET /agent/status/{task_id}`:
+
+```json
+{
+	"task_id": "7c6f5e5d-4f6f-4c5f-9d63-7f2e0de9f6c4",
+	"state": "SUCCESS",
+	"result": {
+		"status": "completed",
+		"report": {
+			"start_date": "2026-08-01",
+			"end_date": "2026-08-07",
+			"signup_count": 14,
+			"top_source": "organic",
+			"source_breakdown": {"organic": 7, "ads": 4, "referral": 3}
+		},
+		"email_result": {
+			"sent": true,
+			"provider_message_id": "<provider-response-id>",
+			"subject": "Sales signups summary for 2026-08-01 to 2026-08-07",
+			"body": "Hello Sales team,..."
+		}
+	}
+}
+```
+
+Sample generated email:
+
+```text
+Subject: Sales signups summary for 2026-08-01 to 2026-08-07
+
+Hello Sales team,
+
+Here is the signup summary for 2026-08-01 to 2026-08-07:
+Total signups: 14
+Top source: organic
+
+Source breakdown:
+- ads: 4
+- organic: 7
+- referral: 3
+
+This message is generated from database-backed data only.
+```
+
+## Eval Results
+
+Real local run: `python app/eval/run_eval.py`
+
+| Metric | Result |
+| --- | ---: |
+| Cases passed | 31 / 31 |
+| Adversarial cases blocked | 11 / 11 |
+| Grounding checks passed | 20 / 20 |
+
+All three checks were 100% in the captured run, and the adversarial prompts were blocked with the expected safety reasons.
 
 ## Architecture
 
@@ -17,7 +84,7 @@ flowchart LR
 	Graph --> DBTool[Read-only DB Tool]
 	Graph --> EmailTool[SMTP Email Tool]
 	DBTool --> Postgres[(Postgres)]
-	EmailTool --> Mailhog[Mailhog Inbox]
+	EmailTool --> SMTP[SMTP Provider]
 	Postgres --> Audit[Audit Log]
 ```
 
@@ -75,16 +142,18 @@ Why Celery instead of synchronous HTTP:
 
 - Mailhog is available at `http://localhost:8025`.
 - The app sends SMTP traffic to `mailhog:1025` in Docker, so no real inbox is required for demos.
-- If you later want a real provider, swap the SMTP settings for SendGrid or Resend without changing the app flow.
+- For production, point `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, and `SMTP_USE_TLS` at SendGrid or Resend.
 
 ## If I Had More Time
 
-I would add Alembic migrations, a real LLM planner behind the LangGraph router, and a richer reporting layer for multiple email templates and metrics summaries. I would also wire an actual deployment target with a stable public Swagger URL so the demo is not just local or Docker-based. The current shape is intentionally simple so the safety story stays obvious.
+I would add Alembic migrations, a richer reporting layer with more email templates, and production deployment automation for a permanent public demo URL. I would also add a few more eval scenarios around date-window selection and provider-level email delivery failures. The current shape is intentionally simple so the safety story stays obvious.
 
 ## Deployment Notes
 
 - The app is Dockerized and exposes `/docs` through the FastAPI container.
 - `docker-compose.yml` brings up Postgres, Redis, Mailhog, the API, and the worker.
-- `render.yaml` is included as a deployment blueprint for the web service.
+- `render.yaml` defines both the web service and the Celery worker for Render.
 - If you use Neon, set `DATABASE_URL` to the Neon connection string and set `READONLY_DATABASE_URL` to a Neon read-only role or connection string.
+- Required environment variables for deployment are `APP_NAME`, `ENVIRONMENT`, `SECRET_KEY`, `DATABASE_URL`, `READONLY_DATABASE_URL`, `REDIS_URL`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_USE_TLS`, `EMAIL_FROM`, and `SALES_TEAM_EMAIL`.
+- Seed production with fake data using `make seed-prod ROWS=750` after pointing the environment at the deployed database.
 - The next step for a public demo is to push this repository to GitHub, connect the repo to Render or Fly.io, and update the live demo link above with the deployed `/docs` URL.
