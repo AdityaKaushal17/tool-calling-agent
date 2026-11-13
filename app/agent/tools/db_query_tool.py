@@ -16,8 +16,8 @@ class SignupSummaryRequest(BaseModel):
     @classmethod
     def validate_dates(cls, value: date, info):
         start_date = info.data.get("start_date")
-        if start_date and value <= start_date:
-            raise ValueError("end_date must be after start_date")
+        if start_date and value < start_date:
+            raise ValueError("end_date must be on or after start_date")
         return value
 
 
@@ -28,6 +28,16 @@ class SignupSummary:
     signup_count: int
     top_source: str
     source_breakdown: dict[str, int]
+
+    def to_json(self) -> dict:
+        """JSON-safe dict (dates as ISO strings) for audit logs and Celery results."""
+        return {
+            "start_date": self.start_date.isoformat(),
+            "end_date": self.end_date.isoformat(),
+            "signup_count": self.signup_count,
+            "top_source": self.top_source,
+            "source_breakdown": dict(self.source_breakdown),
+        }
 
 
 class SignupRecord(BaseModel):
@@ -60,8 +70,8 @@ class GetSignupsRequest(BaseModel):
     @classmethod
     def validate_dates(cls, value: date, info):
         start_date = info.data.get("start_date")
-        if start_date and value <= start_date:
-            raise ValueError("end_date must be after start_date")
+        if start_date and value < start_date:
+            raise ValueError("end_date must be on or after start_date")
         return value
 
 
