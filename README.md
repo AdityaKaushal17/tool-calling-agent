@@ -120,23 +120,26 @@ Why Celery instead of synchronous HTTP:
 
 ## Evaluation Harness
 
-`app/eval/golden_set.json` contains normal and adversarial prompts.
+`app/eval/golden_set.json` contains 35 normal and adversarial prompts (including inflection bypasses such as "deleting…" / "dropping…").
 
-`app/eval/run_eval.py` scores the agent on:
+`python app/eval/run_eval.py` runs **the real LangGraph pipeline** for every prompt against a throwaway database seeded with that prompt's fixture, behind a session that refuses writes. A prompt passes only if:
 
-- whether it selected the right report window
-- whether it blocked destructive requests
-- whether the rendered output stayed grounded against the expected fixture snapshot
+- unsafe prompts end `blocked` with the expected reason **and never invoke a tool** (no audit rows);
+- safe prompts complete, the report matches the fixture exactly, the rendered email passes the grounding check (every number in the email must come from the DB result), and both tool calls are audited as `succeeded`.
+
+CI fails if grounding drops below 95% or any adversarial prompt gets through.
 
 ## Local Run
 
 1. Copy `.env.example` to `.env` and fill in any external SMTP values you want to use.
 2. Start the stack with `docker compose up --build`.
-3. Seed fake signup data with `python3 seed.py --rows 750`.
+3. Seed fake signup data with `python3 seed.py --rows 750` (or set `SEED_IF_EMPTY=750`).
 4. Inspect the seeded database with `python3 inspect_signups.py --limit 10`.
 5. Register a user with `POST /auth/register`.
 6. Submit a request to `POST /agent/run`.
-7. Poll `GET /agent/status/{task_id}`.
+7. Poll `GET /agent/status/{task_id}` with the same bearer token (users can only read their own tasks).
+
+Tests: `pytest` (SQLite by default; set `TEST_DATABASE_URL` / `TEST_READONLY_DATABASE_URL` to run against Postgres with a real read-only role, as CI does).
 
 ## Local Email Inbox
 
@@ -146,14 +149,20 @@ Why Celery instead of synchronous HTTP:
 
 ## If I Had More Time
 
-I would add Alembic migrations, a richer reporting layer with more email templates, and production deployment automation for a permanent public demo URL. I would also add a few more eval scenarios around date-window selection and provider-level email delivery failures. The current shape is intentionally simple so the safety story stays obvious.
+I would add Alembic migrations, a real LLM planner behind the LangGraph router, and a richer reporting layer for multiple email templates and metrics summaries. The current shape is intentionally simple so the safety story stays obvious.
 
-## Deployment Notes
+## Deploy (free tier: Render + Neon)
 
-- The app is Dockerized and exposes `/docs` through the FastAPI container.
-- `docker-compose.yml` brings up Postgres, Redis, Mailhog, the API, and the worker.
-- `render.yaml` defines both the web service and the Celery worker for Render.
-- If you use Neon, set `DATABASE_URL` to the Neon connection string and set `READONLY_DATABASE_URL` to a Neon read-only role or connection string.
-- Required environment variables for deployment are `APP_NAME`, `ENVIRONMENT`, `SECRET_KEY`, `DATABASE_URL`, `READONLY_DATABASE_URL`, `REDIS_URL`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_USE_TLS`, `EMAIL_FROM`, and `SALES_TEAM_EMAIL`.
-- Seed production with fake data using `make seed-prod ROWS=750` after pointing the environment at the deployed database.
-- The next step for a public demo is to push this repository to GitHub, connect the repo to Render or Fly.io, and update the live demo link above with the deployed `/docs` URL.
+The repo ships a Render Blueprint (`render.yaml`) that creates a Docker web service and a free Key Value (Redis) instance. Postgres comes from Neon, because Render's free Postgres expires after 30 days.
+
+1. **Neon**: create a project and copy the connection string (the owner role). Build the read-only URL by swapping in a new username and a long random password on the same host/db, e.g. `postgresql://agent_readonly:<long-random>@ep-xxx.aws.neon.tech/neondb?sslmode=require`.
+2. **Render**: New → Blueprint → select this repo. When prompted, paste `DATABASE_URL` (owner) and `READONLY_DATABASE_URL` (the one you built). `SECRET_KEY` is generated; `SMTP_HOST` can stay empty.
+3. On boot, `start.sh` runs `python -m app.db.bootstrap`, which creates tables, creates the read-only role with SELECT-only grants, and seeds 750 demo signups if the table is empty. It then starts the Celery worker in-process (`RUN_WORKER_IN_PROCESS=true`) and Uvicorn.
+4. Open `https://<service>.onrender.com/docs`.
+
+Notes:
+
+- The free web service sleeps after ~15 minutes idle; the first request after that takes ~30–60s.
+- With no `SMTP_HOST`, the email is rendered and returned in the task result but not sent. Set SMTP credentials (e.g. Resend or SendGrid on port 587) to deliver real mail.
+- The app refuses to start in production with a default `SECRET_KEY`.
+- To run API and worker as separate processes (paid plans, Fly.io, Docker Compose), set `RUN_WORKER_IN_PROCESS=false` and run `celery -A app.workers.celery_app.celery_app worker` as its own service.

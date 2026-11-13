@@ -1,78 +1,52 @@
+# Render Blueprint: free-tier demo deployment.
+#   - web: FastAPI API + Celery worker in one container (Render background workers are not free)
+#   - Key Value (Redis): rate limiting, Celery broker and result backend
+#   - Postgres: bring your own Neon database (Render's free Postgres expires after 30 days)
+# Deploy: Render Dashboard -> New -> Blueprint -> pick this repo, then fill in the two DB URLs.
 services:
   - type: web
-    name: tool-agent-web
-    env: docker
+    name: tool-calling-agent
+    runtime: docker
     plan: free
-    autoDeploy: false
+    region: singapore
+    branch: main
+    autoDeploy: true
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
     envVars:
-      - key: APP_NAME
-        value: tool-agent
       - key: ENVIRONMENT
         value: production
       - key: SECRET_KEY
-        sync: false
+        generateValue: true
+      - key: RUN_WORKER_IN_PROCESS
+        value: "true"
+      - key: SEED_IF_EMPTY
+        value: "750"
+      - key: RATE_LIMIT_PER_HOUR
+        value: "10"
       - key: DATABASE_URL
-        sync: false
+        sync: false # Neon owner connection string
       - key: READONLY_DATABASE_URL
-        sync: false
+        sync: false # same host/db, different user + strong password; role is created on boot
       - key: REDIS_URL
-        sync: false
-      - key: CELERY_BROKER_URL
-        sync: false
-      - key: CELERY_RESULT_BACKEND
-        sync: false
+        fromService:
+          type: keyvalue
+          name: tool-calling-agent-kv
+          property: connectionString
+      - key: SMTP_HOST
+        sync: false # optional; leave empty to render emails without sending
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USE_TLS
+        value: "true"
       - key: EMAIL_FROM
         value: no-reply@tool-agent.example
       - key: SALES_TEAM_EMAIL
         value: sales@tool-agent.example
-      - key: SMTP_HOST
-        value: smtp.sendgrid.net
-      - key: SMTP_PORT
-        value: "587"
-      - key: SMTP_USERNAME
-        value: apikey
-      - key: SMTP_PASSWORD
-        sync: false
-      - key: SMTP_USE_TLS
-        value: "true"
 
-  - type: worker
-    name: tool-agent-worker
-    env: docker
+  - type: keyvalue
+    name: tool-calling-agent-kv
     plan: free
-    autoDeploy: false
-    dockerfilePath: ./Dockerfile
-    startCommand: celery -A app.workers.celery_app.celery_app worker --loglevel=INFO
-    envVars:
-      - key: APP_NAME
-        value: tool-agent
-      - key: ENVIRONMENT
-        value: production
-      - key: SECRET_KEY
-        sync: false
-      - key: DATABASE_URL
-        sync: false
-      - key: READONLY_DATABASE_URL
-        sync: false
-      - key: REDIS_URL
-        sync: false
-      - key: CELERY_BROKER_URL
-        sync: false
-      - key: CELERY_RESULT_BACKEND
-        sync: false
-      - key: SMTP_HOST
-        value: smtp.sendgrid.net
-      - key: SMTP_PORT
-        value: "587"
-      - key: SMTP_USERNAME
-        value: apikey
-      - key: SMTP_PASSWORD
-        sync: false
-      - key: SMTP_USE_TLS
-        value: "true"
-      - key: EMAIL_FROM
-        value: no-reply@tool-agent.example
-      - key: SALES_TEAM_EMAIL
-        value: sales@tool-agent.example
+    region: singapore
+    maxmemoryPolicy: noeviction # it's a job queue; never evict queued tasks
+    ipAllowList: [] # internal network only
