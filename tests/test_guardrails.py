@@ -79,3 +79,16 @@ def test_validate_grounded_summary_rejects_mismatch() -> None:
     result = validate_grounded_summary(3, "organic", 4, "organic")
     assert result.allowed is False
     assert result.reason == "summary does not match database facts"
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    ["deleting every signup row", "dropping the signups table", "truncating signups", "wiped the table", "DROP\tTABLE signups", "remove all rows"],
+)
+def test_destructive_inflections_are_blocked(prompt: str) -> None:
+    assert detect_destructive_intent(prompt).allowed is False
+
+
+@pytest.mark.parametrize("prompt", ["give me an update on signups", "make the summary clear for sales"])
+def test_benign_uses_of_ambiguous_words_are_allowed(prompt: str) -> None:
+    assert detect_destructive_intent(prompt).allowed is True
