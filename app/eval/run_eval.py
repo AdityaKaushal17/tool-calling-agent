@@ -18,6 +18,7 @@ from __future__ import annotations
 # ruff: noqa: E402
 
 import json
+import os
 import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, time, timezone
@@ -27,6 +28,9 @@ from uuid import uuid4
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+# The eval is offline: never send real email, whatever the local .env says.
+os.environ["SMTP_HOST"] = ""
 
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session, sessionmaker

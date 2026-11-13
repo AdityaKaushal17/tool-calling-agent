@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from redis import Redis
@@ -8,6 +9,8 @@ from sqlalchemy import text
 from app.core.config import get_settings
 from app.db.readonly_session import ReadOnlySessionLocal
 from app.db.session import SessionLocal
+
+logger = logging.getLogger(__name__)
 
 
 def _ping_database(session_factory) -> None:
@@ -55,17 +58,23 @@ def check_service_health() -> dict[str, str]:
 
     try:
         _ping_database(SessionLocal)
-    except Exception as exc:
-        health["postgres"] = f"error: {exc}"
+    except Exception:
+        # Detail goes to logs only: raw errors can leak hostnames/usernames to anonymous callers.
+        logger.exception("health check failed: postgres")
+        health["postgres"] = "error"
 
     try:
         _ping_database(ReadOnlySessionLocal)
-    except Exception as exc:
-        health["readonly_postgres"] = f"error: {exc}"
+    except Exception:
+        # Detail goes to logs only: raw errors can leak hostnames/usernames to anonymous callers.
+        logger.exception("health check failed: readonly_postgres")
+        health["readonly_postgres"] = "error"
 
     try:
         _ping_redis()
-    except Exception as exc:
-        health["redis"] = f"error: {exc}"
+    except Exception:
+        # Detail goes to logs only: raw errors can leak hostnames/usernames to anonymous callers.
+        logger.exception("health check failed: redis")
+        health["redis"] = "error"
 
     return health

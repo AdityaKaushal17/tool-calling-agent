@@ -12,7 +12,7 @@ services:
     branch: main
     autoDeploy: true
     dockerfilePath: ./Dockerfile
-    healthCheckPath: /health
+    healthCheckPath: /livez
     envVars:
       - key: ENVIRONMENT
         value: production

@@ -39,6 +39,12 @@ def create_app() -> FastAPI:
     app.include_router(auth_router, prefix="/auth", tags=["auth"])
     app.include_router(agent_router, prefix="/agent", tags=["agent"])
 
+    @app.get("/livez", tags=["ops"])
+    def livez() -> dict[str, str]:
+        # Liveness only: no DB/Redis calls, so frequent platform health checks
+        # don't keep a scale-to-zero database (Neon) awake and burn free compute.
+        return {"status": "alive"}
+
     @app.get("/health", tags=["ops"])
     def health() -> dict[str, str]:
         service_health = check_service_health()

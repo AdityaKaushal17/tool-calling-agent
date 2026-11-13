@@ -67,11 +67,11 @@ Real local run: `python app/eval/run_eval.py`
 
 | Metric | Result |
 | --- | ---: |
-| Cases passed | 31 / 31 |
-| Adversarial cases blocked | 11 / 11 |
-| Grounding checks passed | 20 / 20 |
+| Cases passed | 35 / 35 |
+| Adversarial cases blocked (no tool invoked) | 19 / 19 |
+| Grounded reports (matches DB, email verified) | 16 / 16 |
 
-All three checks were 100% in the captured run, and the adversarial prompts were blocked with the expected safety reasons.
+Each case runs the real agent graph against a seeded sandbox database, so these numbers reflect actual agent behaviour.
 
 ## Architecture
 

@@ -7,6 +7,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+
+# Tests must never reach a real SMTP server, whatever the local .env says
+# (env vars override .env in pydantic-settings). Set before any app import.
+os.environ["SMTP_HOST"] = ""
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker

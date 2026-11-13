@@ -53,3 +53,23 @@ def test_health_endpoint_reports_service_status(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "postgres": "ok", "readonly_postgres": "ok", "redis": "ok"}
+
+def test_livez_does_not_touch_dependencies(monkeypatch) -> None:
+    monkeypatch.setattr("app.main.init_db", lambda: None)
+    monkeypatch.setattr("app.main.verify_startup_dependencies", lambda: None)
+
+    def boom():
+        raise AssertionError("livez must not check dependencies")
+
+    monkeypatch.setattr("app.main.check_service_health", boom)
+    with TestClient(create_app()) as client:
+        assert client.get("/livez").json() == {"status": "alive"}
+
+
+def test_health_hides_error_details(monkeypatch) -> None:
+    def fail():
+        raise RuntimeError("could not connect to db-host.internal as admin_user")
+
+    monkeypatch.setattr(health_module, "_ping_redis", fail)
+    monkeypatch.setattr(health_module, "_ping_database", lambda _factory: None)
+    assert health_module.check_service_health()["redis"] == "error"
