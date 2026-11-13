@@ -109,5 +109,5 @@ jobs:
             raise SystemExit(f"grounding score too low: {grounding_pass_rate:.2%}")
           PY
 
-        - name: Build Docker image
+      - name: Build Docker image
         run: docker build -t tool-agent:${{ github.sha }} .
