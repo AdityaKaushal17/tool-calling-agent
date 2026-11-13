@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 import re
@@ -7,9 +8,9 @@ from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
 
-from app.agent.guardrails import detect_destructive_intent, detect_hallucination_intent, validate_grounded_summary
+from app.agent.guardrails import detect_destructive_intent, detect_hallucination_intent, validate_grounded_email
 from app.agent.tools.db_query_tool import SignupSummaryRequest, get_signup_summary
-from app.agent.tools.email_tool import SignupEmailPayload, send_signup_summary_email
+from app.agent.tools.email_tool import SignupEmailPayload, render_signup_summary_email, send_signup_summary_email
 from app.core.config import get_settings
 from app.db.audit import create_audit_entry, finalize_audit_entry
 from app.db.readonly_session import ReadOnlySessionLocal
@@ -31,21 +32,27 @@ class AgentState(TypedDict, total=False):
     result: dict
 
 
-def _resolve_window(request_text: str) -> tuple[date, date]:
-    today = datetime.now(timezone.utc).date()
+_LAST_N_DAYS = re.compile(r"\b(?:last|past)\s+(\d{1,3})\s+days?\b")
+
+
+def _resolve_window(request_text: str, today: date | None = None) -> tuple[date, date]:
+    today = today or datetime.now(timezone.utc).date()
     text = request_text.lower()
 
     if "last week" in text:
         start = today - timedelta(days=today.weekday() + 7)
-        end = start + timedelta(days=6)
-        return start, end
+        return start, start + timedelta(days=6)
+    if "this week" in text:
+        return today - timedelta(days=today.weekday()), today
     if "yesterday" in text:
         yesterday = today - timedelta(days=1)
         return yesterday, yesterday
     if "today" in text:
         return today, today
-    if "last 7 days" in text:
-        return today - timedelta(days=7), today
+    match = _LAST_N_DAYS.search(text)
+    if match:
+        days = max(1, min(int(match.group(1)), 365))
+        return today - timedelta(days=days), today
     return today - timedelta(days=7), today
 
 
@@ -56,7 +63,31 @@ def _resolve_team_email(request_text: str) -> str:
     return str(settings.sales_team_email)
 
 
-def build_agent_graph():
+@contextmanager
+def _audited(session_factory, *, task_id: str, user_id: int, action: str, input_json: dict):
+    """Record a tool call in audit_log. The 'started' row is committed up front,
+    and the outcome is written in a fresh transaction so a failure inside the
+    tool (or a bad payload) can never poison the audit session."""
+    with session_factory() as audit_db:
+        entry = create_audit_entry(audit_db, task_id=task_id, user_id=user_id, action=action, input_json=input_json)
+        audit_db.commit()
+        outcome: dict = {}
+        try:
+            yield outcome
+        except Exception as exc:
+            audit_db.rollback()
+            finalize_audit_entry(audit_db, entry, output_json={"error": str(exc)}, status="failed")
+            audit_db.commit()
+            raise
+        finalize_audit_entry(audit_db, entry, output_json=outcome.get("output"), status="succeeded")
+        audit_db.commit()
+
+
+def build_agent_graph(*, session_factory=None, readonly_session_factory=None):
+    """session factories are injectable so tests and the eval harness can run the
+    real graph against a throwaway database; production uses the configured ones."""
+    session_factory = session_factory or SessionLocal
+    readonly_session_factory = readonly_session_factory or ReadOnlySessionLocal
     builder = StateGraph(AgentState)
 
     def guardrails_node(state: AgentState) -> AgentState:
@@ -74,25 +105,18 @@ def build_agent_graph():
     def query_node(state: AgentState) -> AgentState:
         request = SignupSummaryRequest(start_date=state["start_date"], end_date=state["end_date"])
 
-        with SessionLocal() as audit_db:
-            audit_entry = create_audit_entry(
-                audit_db,
-                task_id=state["task_id"],
-                user_id=state["user_id"],
-                action="db_query_tool.get_signup_summary",
-                input_json={"start_date": request.start_date.isoformat(), "end_date": request.end_date.isoformat()},
-            )
-            try:
-                with ReadOnlySessionLocal() as db:
-                    summary = get_signup_summary(db, request)
-                finalize_audit_entry(audit_db, audit_entry, output_json=asdict(summary), status="succeeded")
-                audit_db.commit()
-            except Exception as exc:
-                finalize_audit_entry(audit_db, audit_entry, output_json={"error": str(exc)}, status="failed")
-                audit_db.commit()
-                raise
+        with _audited(
+            session_factory,
+            task_id=state["task_id"],
+            user_id=state["user_id"],
+            action="db_query_tool.get_signup_summary",
+            input_json={"start_date": request.start_date.isoformat(), "end_date": request.end_date.isoformat()},
+        ) as outcome:
+            with readonly_session_factory() as db:
+                summary = get_signup_summary(db, request)
+            outcome["output"] = summary.to_json()
 
-        return {"report": asdict(summary)}
+        return {"report": summary.to_json()}
 
     def compose_email_node(state: AgentState) -> AgentState:
         report = state["report"]
@@ -105,38 +129,27 @@ def build_agent_graph():
             source_breakdown=report["source_breakdown"],
         )
 
-        grounded = validate_grounded_summary(
-            expected_count=report["signup_count"],
-            expected_top_source=report["top_source"],
-            actual_count=payload.signup_count,
-            actual_top_source=payload.top_source,
-        )
+        _subject, body = render_signup_summary_email(payload)
+        grounded = validate_grounded_email(body, report)
         if not grounded.allowed:
             return {"blocked": True, "blocked_reason": grounded.reason or "grounding check failed"}
 
-        return {"email_payload": payload.model_dump()}
+        return {"email_payload": payload.model_dump(mode="json")}
 
     def email_node(state: AgentState) -> AgentState:
         payload = SignupEmailPayload.model_validate(state["email_payload"])
 
-        with SessionLocal() as audit_db:
-            audit_entry = create_audit_entry(
-                audit_db,
-                task_id=state["task_id"],
-                user_id=state["user_id"],
-                action="email_tool.send_signup_summary_email",
-                input_json=payload.model_dump(),
-            )
-            try:
-                result = send_signup_summary_email(payload)
-                finalize_audit_entry(audit_db, audit_entry, output_json=result.__dict__, status="succeeded")
-                audit_db.commit()
-            except Exception as exc:
-                finalize_audit_entry(audit_db, audit_entry, output_json={"error": str(exc)}, status="failed")
-                audit_db.commit()
-                raise
+        with _audited(
+            session_factory,
+            task_id=state["task_id"],
+            user_id=state["user_id"],
+            action="email_tool.send_signup_summary_email",
+            input_json=payload.model_dump(mode="json"),
+        ) as outcome:
+            result = send_signup_summary_email(payload)
+            outcome["output"] = asdict(result)
 
-        return {"email_result": result.__dict__}
+        return {"email_result": asdict(result)}
 
     def finalize_node(state: AgentState) -> AgentState:
         if state.get("blocked"):
@@ -173,7 +186,7 @@ def build_agent_graph():
     return builder.compile()
 
 
-def run_agent_request(*, task_id: str, user_id: int, user_email: str, request_text: str) -> dict:
-    graph = build_agent_graph()
+def run_agent_request(*, task_id: str, user_id: int, user_email: str, request_text: str, **factories) -> dict:
+    graph = build_agent_graph(**factories)
     state = graph.invoke({"task_id": task_id, "user_id": user_id, "user_email": user_email, "request_text": request_text})
     return state.get("result", {"status": "failed"})

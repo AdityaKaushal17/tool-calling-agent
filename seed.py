@@ -1,38 +1,11 @@
 from __future__ import annotations
 
 import argparse
-import random
-from datetime import datetime, timedelta, timezone
-
-from faker import Faker
 from sqlalchemy import delete
 
 from app.db.models import Signup
+from app.db.seed_data import generate_rows
 from app.db.session import SessionLocal, init_db
-
-
-SOURCES = ["organic", "referral", "ads", "social", "partner", "newsletter"]
-PLANS = ["free", "starter", "pro", "business", "enterprise"]
-
-
-def generate_rows(total_rows: int) -> list[Signup]:
-    fake = Faker()
-    now = datetime.now(timezone.utc)
-    rows: list[Signup] = []
-
-    for index in range(total_rows):
-        signup_date = now - timedelta(days=random.randint(0, 59), hours=random.randint(0, 23), minutes=random.randint(0, 59))
-        rows.append(
-            Signup(
-                name=fake.name(),
-                email=fake.unique.email(),
-                source=random.choice(SOURCES),
-                plan_type=random.choice(PLANS),
-                signup_date=signup_date,
-            )
-        )
-
-    return rows
 
 
 def main() -> None:

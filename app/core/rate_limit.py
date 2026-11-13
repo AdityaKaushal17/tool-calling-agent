@@ -16,9 +16,11 @@ class RedisRateLimiter:
         self.redis_client = redis_client
 
     def allow(self, key: str, limit: int, window_seconds: int) -> RateLimitResult:
-        current = int(self.redis_client.incr(key))
-        if current == 1:
-            self.redis_client.expire(key, window_seconds)
+        # INCR + EXPIRE NX in one round trip, so a crash between them can't leave a key that never expires.
+        pipe = self.redis_client.pipeline()
+        pipe.incr(key)
+        pipe.expire(key, window_seconds, nx=True)
+        current = int(pipe.execute()[0])
 
         ttl = self.redis_client.ttl(key)
         ttl = max(ttl, 0)
